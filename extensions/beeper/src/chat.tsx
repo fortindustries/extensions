@@ -240,7 +240,7 @@ export function ChatListView({
   );
   const { setValue: setLastChatID } = useLocalStorage<string | null>(`${stateKey}:last-id`, null);
   const { value: indexStateRaw = defaultIndexState, setValue: setIndexState } = useLocalStorage<ChatIndexState>(
-    `${stateKey}:index:v2`,
+    `${stateKey}:index:v3`,
     defaultIndexState,
   );
 
