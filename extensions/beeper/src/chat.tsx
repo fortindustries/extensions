@@ -184,6 +184,9 @@ const matchesSearchTerms = (fields: ChatSearchFields, terms: string[]) => {
   return requiredTerms.length === 0 || requiredTerms.every((term) => values.some((value) => value.includes(term)));
 };
 
+const titleMatchesSearchTerms = (fields: ChatSearchFields, terms: string[]) =>
+  matchesSearchTerms({ title: fields.title, network: "", participants: [] }, terms);
+
 const buildSearchFields = (
   chat: BeeperDesktop.Chat,
   accountServices: Map<string, AccountServiceInfo>,
@@ -417,7 +420,9 @@ export function ChatListView({
     }
 
     const now = Date.now();
-    const scored = filtered
+    const titleMatches = filtered.filter((indexed) => titleMatchesSearchTerms(indexed.searchFields, tokens));
+    const searchCandidates = titleMatches.length > 0 ? titleMatches : filtered;
+    const scored = searchCandidates
       .filter((indexed) => matchesSearchTerms(indexed.searchFields, tokens))
       .map((indexed) => {
         const title = indexed.searchFields.title;
