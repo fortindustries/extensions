@@ -561,6 +561,16 @@ export function ChatListView({
   };
 
   const sections = useMemo(() => {
+    if (trimmedQuery.length > 0) {
+      return {
+        pinnedChats: [],
+        unreadChats: [],
+        recentChats: [],
+        frequentChats: [],
+        otherChats: chats,
+      };
+    }
+
     const pinnedIDs = new Set<string>();
     const unreadIDs = new Set<string>();
     const pinnedChats: BeeperDesktop.Chat[] = [];
@@ -602,7 +612,7 @@ export function ChatListView({
     );
 
     return { pinnedChats, unreadChats, recentChats, frequentChats, otherChats };
-  }, [chats, frecencyChats, recentChatIDs, showUnreadSection]);
+  }, [chats, frecencyChats, recentChatIDs, showUnreadSection, trimmedQuery]);
 
   const showSections = showSmartSections && trimmedQuery.length === 0;
   const showUnread = showUnreadSection && sections.unreadChats.length > 0;
