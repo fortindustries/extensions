@@ -16,7 +16,6 @@ import {
 } from "@raycast/api";
 import { useCachedState, useFrecencySorting, useForm, useLocalStorage, withAccessToken } from "@raycast/utils";
 import BeeperDesktop from "@beeper/desktop-api";
-import Fuse from "fuse.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   archiveChat,
@@ -174,114 +173,16 @@ type ChatSearchFields = {
   participants: string[];
 };
 
-interface PropertyScore {
-  minScore: number;
-  hits: number;
-}
+const getSearchValues = (fields: ChatSearchFields) => [fields.title, fields.network, ...fields.participants];
 
-interface SearchableScore {
-  title: PropertyScore;
-  network: PropertyScore;
-  participants: PropertyScore;
-}
+const countMatchingTerms = (values: string[], terms: string[]) =>
+  terms.reduce((hits, term) => hits + (values.some((value) => value.includes(term)) ? 1 : 0), 0);
 
-interface SearchIndexResult {
-  id: string;
-  score: SearchableScore;
-  matchSearchTerms: Set<string>;
-}
-
-interface SearchIndexItem {
-  id: string;
-  searchFields: ChatSearchFields;
-}
-
-interface SearchableMatch {
-  id: string;
-  title: number[];
-  network: number[];
-  participants: number[];
-  matchedSearchTerms: Set<string>;
-}
-
-const computeScore = (scores: number[]): PropertyScore => {
-  if (!scores || scores.length === 0) {
-    return { minScore: Number.MAX_SAFE_INTEGER, hits: 0 };
-  }
-  return { minScore: Math.min(...scores), hits: scores.length };
+const matchesSearchTerms = (fields: ChatSearchFields, terms: string[]) => {
+  const requiredTerms = terms.filter((term) => !STOP_WORDS.has(term));
+  const values = getSearchValues(fields);
+  return requiredTerms.length === 0 || requiredTerms.every((term) => values.some((value) => value.includes(term)));
 };
-
-const computeScoreFromMatch = (match: SearchableMatch): SearchableScore => ({
-  title: computeScore(match.title),
-  network: computeScore(match.network),
-  participants: computeScore(match.participants),
-});
-
-type SearchProperty = keyof ChatSearchFields;
-
-class ThreadSearchIndex {
-  private fuse: Fuse<SearchIndexItem>;
-
-  constructor(collection: SearchIndexItem[]) {
-    this.fuse = new Fuse(collection, {
-      ignoreDiacritics: true,
-      includeScore: true,
-      ignoreLocation: true,
-      ignoreFieldNorm: true,
-      threshold: 0,
-      keys: ["searchFields.title", "searchFields.network", "searchFields.participants"],
-    });
-  }
-
-  search(query: string, properties: SearchProperty[]): SearchIndexResult[] {
-    if (!query?.trim()) return [];
-    const searchTerms = parseSearchTerms(query);
-    const matches = new Map<string, SearchableMatch>();
-
-    const getOrCreateMatch = (id: string): SearchableMatch => {
-      const existing = matches.get(id);
-      if (existing) return existing;
-      const fresh: SearchableMatch = {
-        id,
-        title: [],
-        network: [],
-        participants: [],
-        matchedSearchTerms: new Set<string>(),
-      };
-      matches.set(id, fresh);
-      return fresh;
-    };
-
-    for (const searchTerm of searchTerms) {
-      for (const property of properties) {
-        const expression = { [`searchFields.${property}`]: searchTerm } as unknown as Parameters<
-          Fuse<SearchIndexItem>["search"]
-        >[0];
-        const results = this.fuse.search(expression);
-        for (const result of results) {
-          if (result.score == null) continue;
-          const match = getOrCreateMatch(result.item.id);
-          match[property].push(result.score);
-          match.matchedSearchTerms.add(searchTerm);
-        }
-      }
-    }
-
-    const requiredTerms = searchTerms.filter((term) => !STOP_WORDS.has(term));
-    const resp: SearchIndexResult[] = [];
-    for (const match of matches.values()) {
-      if (requiredTerms.length > 0 && !requiredTerms.every((term) => match.matchedSearchTerms.has(term))) {
-        continue;
-      }
-      resp.push({
-        id: match.id,
-        score: computeScoreFromMatch(match),
-        matchSearchTerms: match.matchedSearchTerms,
-      });
-    }
-    return resp;
-  }
-}
 
 const buildSearchFields = (
   chat: BeeperDesktop.Chat,
@@ -502,11 +403,6 @@ export function ChatListView({
 
   const tokens = useMemo(() => parseSearchTerms(trimmedQuery), [trimmedQuery]);
   const normalizedQuery = useMemo(() => normalizeSearchValue(trimmedQuery), [trimmedQuery]);
-  const searchIndex = useMemo(() => {
-    if (tokens.length === 0) return null;
-    const collection = indexState.items.map((item) => ({ id: item.chat.id, searchFields: item.searchFields }));
-    return new ThreadSearchIndex(collection);
-  }, [indexState.items, tokens.length]);
   const chats = useMemo(() => {
     const normalizedInbox = filters.inbox === "inbox" ? "primary" : filters.inbox;
     const filtered = indexState.items.filter((item) => {
@@ -521,38 +417,22 @@ export function ChatListView({
     }
 
     const now = Date.now();
-    const filteredById = new Map(filtered.map((item) => [item.chat.id, item]));
-    const results = searchIndex ? searchIndex.search(trimmedQuery, ["title", "network", "participants"]) : [];
-    const scored = results
-      .map((result) => {
-        const indexed = filteredById.get(result.id);
-        if (!indexed) return null;
+    const scored = filtered
+      .filter((indexed) => matchesSearchTerms(indexed.searchFields, tokens))
+      .map((indexed) => {
         const title = indexed.searchFields.title;
+        const titleValues = [title];
         return {
           chat: indexed.chat,
           exactTitle: normalizedQuery.length > 0 && title === normalizedQuery,
           prefixTitle: normalizedQuery.length > 0 && title.startsWith(normalizedQuery),
-          titleHits: result.score.title.hits,
-          participantHits: result.score.participants.hits,
-          networkHits: result.score.network.hits,
+          titleHits: countMatchingTerms(titleValues, tokens),
+          participantHits: countMatchingTerms(indexed.searchFields.participants, tokens),
+          networkHits: countMatchingTerms([indexed.searchFields.network], tokens),
           isSingle: indexed.chat.type === "single",
           timestamp: getChatTimestamp(indexed.chat),
         };
-      })
-      .filter(
-        (
-          item,
-        ): item is {
-          chat: BeeperDesktop.Chat;
-          exactTitle: boolean;
-          prefixTitle: boolean;
-          titleHits: number;
-          participantHits: number;
-          networkHits: number;
-          isSingle: boolean;
-          timestamp: number;
-        } => Boolean(item),
-      );
+      });
 
     const recencyBoost = (timestamp: number) => Math.max(0, 30 - (now - timestamp) / (24 * 60 * 60 * 1000));
 
@@ -580,7 +460,6 @@ export function ChatListView({
     indexState.items,
     normalizedQuery,
     normalizedType,
-    searchIndex,
     tokens,
     trimmedQuery,
   ]);
@@ -899,6 +778,7 @@ export function ChatListView({
       isLoading={isLoading}
       searchBarPlaceholder={searchPlaceholder}
       onSearchTextChange={setSearchText}
+      filtering={false}
       searchBarAccessory={inboxDropdown}
       isShowingDetail={isShowingDetail}
       throttle
